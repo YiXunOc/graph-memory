@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { apply, GRAPH_MEMORY_PRO_SERVICE } from "../pro/dsh.ts";
 import type { GraphMemoryProHostApi } from "../pro/types.ts";
 
@@ -12,6 +13,28 @@ afterEach(() => {
 });
 
 describe("DSH Pro Lite host", () => {
+  it("serves snapshot and detail through a Cordis Service view", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "graph-memory-pro-remote-"));
+    cleanup.push(dir);
+    const root = new Context();
+    const dbPath = join(dir, "memory.db");
+    try {
+      const fiber = root.plugin({
+        apply: (ctx: Context) => apply(ctx as never, { dbPath, modelToolsEnabled: false }),
+      });
+      await fiber;
+      const remote = root.get(GRAPH_MEMORY_PRO_SERVICE) as {
+        snapshot(request: { maxNodes: number }): { nodes: unknown[] };
+        detail(id: string): unknown;
+      };
+      expect(remote.snapshot({ maxNodes: 2 }).nodes).toEqual([]);
+      expect(remote.detail("missing")).toBeNull();
+      await fiber.dispose();
+      expect(root.get(GRAPH_MEMORY_PRO_SERVICE)).toBeUndefined();
+    } finally {
+      await root.fiber.dispose();
+    }
+  });
   it("provides a typed service, registers bounded tools, and disposes its store", async () => {
     const dir = mkdtempSync(join(tmpdir(), "graph-memory-pro-dsh-"));
     cleanup.push(dir);

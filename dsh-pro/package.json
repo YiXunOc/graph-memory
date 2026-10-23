@@ -1,6 +1,6 @@
 {
   "name": "graph-memory-pro-dsh",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.3",
   "description": "Read-only Graph Memory Pro graph view for DeepSeek Harness Web",
   "type": "module",
   "main": "./index.js",

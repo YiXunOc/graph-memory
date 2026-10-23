@@ -136,7 +136,7 @@ window.__ModuleLoader__.load({
       },
     };
 
-    const strict = (typeSymbol, schema) => ({ mode: "strict", typeSymbol, schema });
+    const strict = (typeSymbol, schema) => ({ mode: "strict", typeSymbol, create: () => schema });
     const remoteContribution = {
       package: "graph-memory-pro-dsh",
       descriptors: [
@@ -273,20 +273,21 @@ window.__ModuleLoader__.load({
     const inject = ["slots", "remote"];
     async function apply(ctx) {
       const disposeRemote = await ctx.remote.$mount(remoteContribution);
-      const disposeSlot = ctx.slots.inject("sidebar.footer.action", () => ctx.slots.register({
+      const ui = ctx.inject(["remote.graphMemoryPro", "slots"], (uiCtx) => uiCtx.slots.inject("sidebar.footer.action", () => uiCtx.slots.register({
         name: "sidebar.footer.action",
         id: "graph-memory-pro",
         order: -10,
         inject: () => ({
           loadSnapshot: async (query) => {
-            const result = await ctx.remote.graphMemoryPro.snapshot({ query, maxNodes: 120 });
+            const result = await uiCtx.remote.graphMemoryPro.snapshot({ query, maxNodes: 120 });
             if (!result.ok) throw new Error(result.error.message);
             return result.value;
           },
         }),
-      }, GraphMemoryEntry));
+      }, GraphMemoryEntry)));
+      try { await ui; } catch (error) { await ui.dispose(); await disposeRemote(); throw error; }
       return async () => {
-        disposeSlot();
+        await ui.dispose();
         await disposeRemote();
       };
     }

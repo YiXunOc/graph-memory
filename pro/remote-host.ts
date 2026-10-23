@@ -12,22 +12,22 @@ const remoteInitializers: RemoteInitializer[] = [];
 
 /** DSH Typert service exposing only bounded, read-only graph operations. */
 export class GraphMemoryProRemoteService extends TypertRemoteService {
-  readonly #api: GraphMemoryProHostApi;
+  private readonly api: GraphMemoryProHostApi;
 
   constructor(ctx: unknown, api: GraphMemoryProHostApi) {
     super(ctx, "graphMemoryPro");
-    this.#api = api;
+    this.api = api;
     for (const initialize of remoteInitializers) initialize.call(this);
   }
 
   /** Return one validated, bounded graph projection. */
   snapshot(request: GraphSnapshotRequest): GraphSnapshot {
-    return this.#api.getSnapshot(request);
+    return this.api.getSnapshot(request);
   }
 
   /** Return bounded content for one selected opaque node id. */
   detail(id: GraphNodeId): GraphNodeDetail | null {
-    return this.#api.getNodeDetail(id);
+    return this.api.getNodeDetail(id);
   }
 }
 
