@@ -24,6 +24,11 @@ export function apply(ctx, input = {}) {
     const service = {
         getSnapshot: (request) => store.getSnapshot(request),
         getNodeDetail: (id) => store.getNodeDetail(id),
+        getActivities: (sessionId, limit) => store.getActivities(sessionId, limit),
+        getUsage: (sessionId, limit) => store.getUsage(sessionId, limit),
+        getOverview: () => store.getOverview(),
+        getTurnMemories: (query, limit) => store.getTurnMemories(query, limit),
+        getRelations: (query, limit) => store.getRelations(query, limit),
     };
     if (input.remoteEnabled ?? true) {
         new GraphMemoryProRemoteService(ctx, service);
@@ -42,7 +47,7 @@ export function apply(ctx, input = {}) {
                     query: { type: "string", description: "Optional keywords used to select graph nodes" },
                     nodeTypes: {
                         type: "array",
-                        items: { type: "string", enum: ["TASK", "SKILL", "EVENT"] },
+                        items: { type: "string", enum: ["TASK", "SKILL", "EVENT", "TURN", "TERM"] },
                     },
                     maxNodes: { type: "integer", minimum: 1 },
                 },

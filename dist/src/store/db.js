@@ -95,11 +95,57 @@ function migrate(db) {
         m14_temporal_revisions,
         m15_turn_memories,
         m16_navigation_triples,
+        m17_runtime_activities,
+        m18_provider_usage,
     ];
     for (let i = cur; i < steps.length; i++) {
         steps[i](db);
         db.prepare("INSERT INTO _migrations (v,at) VALUES (?,?)").run(i + 1, Date.now());
     }
+}
+function m17_runtime_activities(db) {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS gm_runtime_activities (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      turn_index INTEGER,
+      step_index INTEGER,
+      event_seq INTEGER,
+      operation_id TEXT,
+      kind TEXT NOT NULL CHECK(kind IN ('archive','projection','recall','extraction','embedding')),
+      status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),
+      message TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS ix_gm_runtime_activities_session ON gm_runtime_activities(session_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS ix_gm_runtime_activities_kind ON gm_runtime_activities(kind, created_at);
+  `);
+}
+function m18_provider_usage(db) {
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS gm_provider_usage (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      turn_index INTEGER NOT NULL,
+      step_index INTEGER,
+      event_seq INTEGER,
+      request_kind TEXT NOT NULL CHECK(request_kind IN ('main-agent','graph-extraction','embedding')),
+      provider TEXT,
+      model TEXT,
+      uncached_input_tokens INTEGER,
+      output_tokens INTEGER,
+      total_tokens INTEGER,
+      cache_read_tokens INTEGER,
+      cache_write_tokens INTEGER,
+      reasoning_tokens INTEGER,
+      usage_complete INTEGER NOT NULL CHECK(usage_complete IN (0,1)),
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_gm_provider_usage_session ON gm_provider_usage(session_id, turn_index DESC);
+    CREATE INDEX IF NOT EXISTS ix_gm_provider_usage_kind ON gm_provider_usage(request_kind, created_at);
+  `);
 }
 // ─── 摘要派生的 SPO 导航：与旧概念图分表，避免语义混用 ──────
 function m16_navigation_triples(db) {

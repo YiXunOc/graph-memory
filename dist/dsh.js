@@ -20,6 +20,10 @@ import { filterDshRecallMemories, filterDshRecallNodes, insertDshRecallBeforeCur
 import { createEmbedFn } from "./src/engine/embed.js";
 import { computeGlobalPageRank, invalidateGraphCache } from "./src/graph/pagerank.js";
 import { detectCommunities, detectNavigationCommunities } from "./src/graph/community.js";
+import { recordGraphMemoryActivity } from "./pro/activity.js";
+import { recordGraphMemoryUsage } from "./pro/usage.js";
+import { projectMainTurnUsage } from "./pro/turn-usage.js";
+import { normalizeTelemetryRetentionPolicy, pruneGraphMemoryTelemetry } from "./pro/telemetry-retention.js";
 import { DEFAULT_CONFIG } from "./src/types.js";
 import { messageRetentionPolicyRevision, normalizeMessageRetentionPolicy, runMessageRetention, } from "./src/store/retention.js";
 export const name = "graph-memory-dsh";
@@ -95,6 +99,7 @@ export function apply(ctx, input = {}) {
         throw new TypeError("[graph-memory] llmReasoningEffort must be a non-empty provider effort ID");
     }
     const messageRetention = normalizeMessageRetentionPolicy(input.messageRetention);
+    const telemetryRetention = normalizeTelemetryRetentionPolicy(input.telemetryRetention);
     const credentialRef = input.embedding?.apiKeyEnv;
     if (credentialRef && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(credentialRef)) {
         throw new TypeError(`[graph-memory] embedding.apiKeyEnv must be a credential reference, received ${JSON.stringify(credentialRef)}`);
@@ -116,6 +121,14 @@ export function apply(ctx, input = {}) {
     const extractionEnabled = input.extractionEnabled ?? true;
     const recallEnabled = input.recallEnabled ?? true;
     const db = openDb(config.dbPath, { busyTimeoutMs: input.dbBusyTimeoutMs });
+    const activity = (record) => {
+        try {
+            recordGraphMemoryActivity(db, record);
+        }
+        catch (cause) {
+            ctx.logger.warn(`[graph-memory] activity telemetry unavailable: ${String(cause)}`);
+        }
+    };
     const recaller = new Recaller(db, config);
     const latestRoute = new Map();
     const extractChain = new Map();
@@ -322,6 +335,8 @@ export function apply(ctx, input = {}) {
         try {
             await extractOnce(sessionId, sid, messages);
             markMessagesExtracted(db, ids);
+            const turnIndex = Number(rows[0]?.turn_index);
+            activity({ sessionId: sid, kind: "extraction", status: "completed", message: "本轮记忆已保存", turnIndex: Number.isInteger(turnIndex) ? turnIndex : undefined });
             return true;
         }
         catch (cause) {
@@ -345,6 +360,7 @@ export function apply(ctx, input = {}) {
                 return false;
             }
             quarantineMessages(db, ids, error.message);
+            activity({ sessionId: sid, kind: "extraction", status: "failed", message: "本轮记忆抽取失败，原始来源仍保留", turnIndex: Number.isInteger(Number(rows[0]?.turn_index)) ? Number(rows[0].turn_index) : undefined });
             ctx.logger.warn(`[graph-memory] DSH extraction quarantined turn=${rows[0].turn_index}: ${error.message}`);
             return true;
         }
@@ -437,6 +453,14 @@ export function apply(ctx, input = {}) {
             result.errors.push(message);
             ctx.logger.warn(`[graph-memory] DSH ${message}`);
         }
+        try {
+            result.telemetry = pruneGraphMemoryTelemetry(db, telemetryRetention);
+        }
+        catch (error) {
+            const message = `telemetry retention failed: ${String(error)}`;
+            result.errors.push(message);
+            ctx.logger.warn(`[graph-memory] DSH ${message}`);
+        }
         return result;
     }
     function maintain(sessionId) {
@@ -470,6 +494,7 @@ export function apply(ctx, input = {}) {
                 compactionMetrics.projectedTurns += 1;
                 compactionMetrics.projectedEvents += result.shadowedSeqs.length;
                 compactionMetrics.projectedTokens += result.shadowedTokenCount;
+                activity({ sessionId: sessionKey(session.id), kind: "projection", status: "completed", message: `已归档本轮 ${result.shadowedSeqs.length} 条中间事件`, details: { events: result.shadowedSeqs.length, estimatedTokens: result.shadowedTokenCount }, turnIndex: turn, eventSeq: turnEndSeq });
                 ctx.logger.info(`[graph-memory] projected completed turn ${turn}: archived ${result.shadowedSeqs.length} ` +
                     `intermediate events (~${result.shadowedTokenCount} tokens), retained question + final answer`);
             }
@@ -511,6 +536,7 @@ export function apply(ctx, input = {}) {
                     compactionMetrics.succeeded += 1;
                     compactionMetrics.shadowedEvents += result.shadowedSeqs.length;
                     compactionMetrics.shadowedTokens += result.shadowedTokenCount;
+                    activity({ sessionId: sessionKey(agent.session.id), kind: "archive", status: "completed", message: `已归档 ${result.shadowedSeqs.length} 条旧上下文事件，保留最近 ${freshTurnCount} 轮`, details: { events: result.shadowedSeqs.length, estimatedTokens: result.shadowedTokenCount, retainedTurns: freshTurnCount } });
                     ctx.logger.info(`[graph-memory] archived ${result.shadowedSeqs.length} surface events ` +
                         `(~${result.shadowedTokenCount} tokens); retained ${freshTurnCount} previous user turns`);
                 }
@@ -592,6 +618,7 @@ export function apply(ctx, input = {}) {
             // The snapshot remains bounded by the same rolling window as its user
             // turn; it is not part of the post-question tool-trace projection.
             const entered = insertDshRecallBeforeCurrentUser(Array.isArray(decision.messages) ? decision.messages : [], recalledMessage);
+            activity({ sessionId: currentSession, kind: "recall", status: "completed", message: `本轮注入 ${recalledMemories.length} 条轮次记忆`, details: { memories: recalledMemories.length, legacyNodes: recalledNodes.length, triples: recalled.triples.length }, turnIndex: Number.isInteger(agent?.turn) ? agent.turn : undefined });
             return { kind: "enter", messages: entered };
         }
         catch (error) {
@@ -640,6 +667,28 @@ export function apply(ctx, input = {}) {
         if (event?.type === "turn/end") {
             const turn = Number(event.data?.turn);
             if (Number.isInteger(turn) && turn > 0) {
+                try {
+                    const events = typeof session.snapshotEvents === "function" ? session.snapshotEvents() : session.events;
+                    if (Array.isArray(events)) {
+                        const endIndex = events.findIndex((candidate) => Number(candidate?.seq) === Number(event.seq));
+                        let startIndex = -1;
+                        for (let index = endIndex; index >= 0; index -= 1) {
+                            const candidate = events[index];
+                            if (candidate?.type === "turn/start" && Number(candidate.data?.turn) === turn) {
+                                startIndex = index;
+                                break;
+                            }
+                        }
+                        if (startIndex >= 0) {
+                            const usage = projectMainTurnUsage(events.slice(startIndex, endIndex + 1), sessionKey(id));
+                            if (usage)
+                                recordGraphMemoryUsage(db, usage);
+                        }
+                    }
+                }
+                catch (cause) {
+                    ctx.logger.warn(`[graph-memory] usage telemetry unavailable: ${String(cause)}`);
+                }
                 captureCompletedTurn(session, turn, Number(event.seq));
             }
             // The committed turn is durable before the single per-session worker is

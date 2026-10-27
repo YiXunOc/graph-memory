@@ -17,6 +17,14 @@ export class GraphMemoryProRemoteService extends TypertRemoteService {
     detail(id) {
         return this.api.getNodeDetail(id);
     }
+    /** Return bounded runtime activity without changing the model-visible surface. */
+    activity(sessionId, limit) {
+        return this.api.getActivities(sessionId, limit);
+    }
+    overview() { return this.api.getOverview(); }
+    turns(query, limit) { return this.api.getTurnMemories(query, limit); }
+    relations(query, limit) { return this.api.getRelations(query, limit); }
+    usage(sessionId, limit) { return this.api.getUsage(sessionId, limit); }
 }
 function markRemote(method) {
     Remote(method)(GraphMemoryProRemoteService.prototype[method], {
@@ -30,3 +38,8 @@ function markRemote(method) {
 }
 markRemote("snapshot");
 markRemote("detail");
+markRemote("activity");
+markRemote("overview");
+markRemote("turns");
+markRemote("relations");
+markRemote("usage");
